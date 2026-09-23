@@ -11,6 +11,7 @@ import java.util.UUID;
  * @param title            заголовок
  * @param docKind          прикладной тип
  * @param currentVersionId id текущей версии
+ * @param currentVersionAuthorId id автора текущей версии
  * @param versionSeq       номер OCC-версии сущности
  * @param createdAt        момент создания
  * @param createdBy        id создателя
@@ -23,9 +24,9 @@ public record DocumentDto(
         String title,
         String docKind,
         UUID currentVersionId,
+        UUID currentVersionAuthorId,
         long versionSeq,
         Instant createdAt,
         UUID createdBy,
         Instant updatedAt,
-        Instant deletedAt) {
-}
+        Instant deletedAt) {}

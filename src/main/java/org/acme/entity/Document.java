@@ -42,6 +42,10 @@ public class Document extends PanacheEntityBase {
     @Column(name = "current_version_id")
     public UUID currentVersionId;
 
+    /** Автор текущей версии (денормализация для быстрых списков). */
+    @Column(name = "current_version_author_id")
+    public UUID currentVersionAuthorId;
+
     /** Optimistic lock. */
     @Version
     @Column(name = "version_seq", nullable = false)

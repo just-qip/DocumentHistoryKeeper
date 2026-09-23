@@ -37,24 +37,29 @@ CREATE INDEX idx_projects_created_by ON docs.projects (created_by);
 -- Documents
 -- =========================================================
 CREATE TABLE docs.documents (
-                                id                  UUID         PRIMARY KEY,
-                                project_id          UUID         NOT NULL,
-                                title               VARCHAR(512) NOT NULL,
-                                doc_kind            VARCHAR(64)  NOT NULL,
-                                current_version_id  UUID,
-                                version_seq         BIGINT       NOT NULL DEFAULT 0,
-                                created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
-                                created_by          UUID         NOT NULL,
-                                updated_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
-                                deleted_at          TIMESTAMPTZ,
+                                id                        UUID         PRIMARY KEY,
+                                project_id                UUID         NOT NULL,
+                                title                     VARCHAR(512) NOT NULL,
+                                doc_kind                  VARCHAR(64)  NOT NULL,
+                                current_version_id        UUID,
+                                current_version_author_id UUID,
+                                version_seq               BIGINT       NOT NULL DEFAULT 0,
+                                created_at                TIMESTAMPTZ  NOT NULL DEFAULT now(),
+                                created_by                UUID         NOT NULL,
+                                updated_at                TIMESTAMPTZ  NOT NULL DEFAULT now(),
+                                deleted_at                TIMESTAMPTZ,
                                 CONSTRAINT fk_documents_project
                                     FOREIGN KEY (project_id) REFERENCES docs.projects (id) ON DELETE CASCADE,
                                 CONSTRAINT fk_documents_created_by
-                                    FOREIGN KEY (created_by) REFERENCES docs.accounts (id)
+                                    FOREIGN KEY (created_by) REFERENCES docs.accounts (id),
+                                CONSTRAINT fk_documents_current_version_author
+                                    FOREIGN KEY (current_version_author_id) REFERENCES docs.accounts (id)
 );
 CREATE INDEX idx_documents_project ON docs.documents (project_id, updated_at DESC)
     WHERE deleted_at IS NULL;
 CREATE INDEX idx_documents_created_by ON docs.documents (created_by);
+CREATE INDEX idx_documents_current_version_author
+    ON docs.documents (current_version_author_id);
 
 -- =========================================================
 -- Document versions
@@ -86,10 +91,11 @@ CREATE INDEX idx_versions_document ON docs.document_versions (document_id, versi
 CREATE INDEX idx_versions_author   ON docs.document_versions (author_id);
 CREATE INDEX idx_versions_hash     ON docs.document_versions (content_hash);
 
+-- Хранить байты в TOAST без попыток сжатия: JPEG/PDF/PNG/ZIP не сжимаются.
 ALTER TABLE docs.document_versions ALTER COLUMN content SET STORAGE EXTERNAL;
 
 -- =========================================================
--- Document events
+-- Document events (append-only, хеш-цепочка)
 -- =========================================================
 CREATE TABLE docs.document_events (
                                       id              BIGSERIAL    PRIMARY KEY,

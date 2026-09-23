@@ -11,6 +11,7 @@ import org.acme.entity.DocumentVersion;
 import org.acme.enums.EventType;
 import org.acme.util.HashUtil;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -24,16 +25,15 @@ public class VersioningService {
     EventService events;
 
     /**
-     * Создаёт новую версию документа и связанное событие.
+     * Создаёт новую версию и событие.
      *
      * @param documentId   документ
      * @param content      байты
-     * @param mimeType     MIME-тип
-     * @param originalName оригинальное имя файла
-     * @param author       автор версии
+     * @param mimeType     MIME
+     * @param originalName имя файла
+     * @param author       автор
      * @param comment      комментарий
-     * @return сохранённая версия
-     * @throws NotFoundException если документ не найден или удалён
+     * @return версия
      */
     @Transactional
     public DocumentVersion createVersion(UUID documentId,
@@ -69,16 +69,22 @@ public class VersioningService {
         version.persist();
 
         doc.currentVersionId = version.id;
+        doc.currentVersionAuthorId = author.id;
         doc.updatedAt = version.createdAt;
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("versionNumber", next);
+        payload.put("sha256", HashUtil.hex(hash));
+        payload.put("sizeBytes", version.sizeBytes);
+        payload.put("mimeType", mimeType);
+        if (comment != null && !comment.isBlank()) {
+            payload.put("comment", comment);
+        }
 
         events.append(documentId, doc.project.id, version.id,
                 next == 1 ? EventType.CREATED : EventType.UPLOADED,
                 author,
-                Map.of(
-                        "versionNumber", next,
-                        "sha256", HashUtil.hex(hash),
-                        "sizeBytes", version.sizeBytes,
-                        "mimeType", mimeType));
+                payload);
 
         return version;
     }

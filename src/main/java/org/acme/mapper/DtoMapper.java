@@ -89,6 +89,7 @@ public final class DtoMapper {
                 document.title,
                 document.docKind,
                 document.currentVersionId,
+                document.currentVersionAuthorId,
                 document.versionSeq,
                 document.createdAt,
                 document.createdBy.id,
