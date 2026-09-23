@@ -1,0 +1,54 @@
+plugins {
+    id 'java'
+    id 'io.quarkus' version "${quarkusVersion}"
+    id "com.github.spotbugs" version "6.0.14"
+    id 'checkstyle'
+    id 'org.sonarqube' version '7.2.2.6593'
+}
+
+dependencies {
+    implementation enforcedPlatform(
+            "io.quarkus.platform:quarkus-bom:${quarkusVersion}"
+    )
+    implementation 'io.quarkus:quarkus-arc'
+    implementation 'io.quarkus:quarkus-rest'
+    implementation 'io.quarkus:quarkus-rest-jackson'
+
+    implementation 'io.quarkus:quarkus-hibernate-orm-panache'
+    implementation 'io.quarkus:quarkus-hibernate-validator'
+    implementation 'io.quarkus:quarkus-jdbc-postgresql'
+
+    implementation 'io.quarkus:quarkus-micrometer-registry-prometheus'
+    implementation 'io.quarkus:quarkus-smallrye-openapi'
+
+    testImplementation 'io.quarkus:quarkus-junit5'
+    testImplementation 'io.rest-assured:rest-assured'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok:1.18.48'
+    annotationProcessor 'org.projectlombok:lombok:1.18.48'
+}
+
+group = project.group
+version = project.version
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+test {
+    systemProperty "java.util.logging.manager", "org.jboss.logmanager.LogManager"
+    jvmArgs "--add-opens", "java.base/java.lang=ALL-UNNAMED"
+
+    useJUnitPlatform()
+    exclude '**/*IT*' // пропустить все интеграционные тесты
+}
+compileJava {
+    options.encoding = 'UTF-8'
+    options.compilerArgs << '-parameters'
+}
+
+compileTestJava {
+    options.encoding = 'UTF-8'
+}
