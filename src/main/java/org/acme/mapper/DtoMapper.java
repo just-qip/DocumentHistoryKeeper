@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.acme.dto.AccountDto;
 import org.acme.dto.DocumentDto;
 import org.acme.dto.EventDto;
+import org.acme.dto.ProjectAccessDto;
 import org.acme.dto.ProjectDto;
 import org.acme.dto.VersionMetaDto;
 import org.acme.entity.Account;
@@ -13,19 +14,13 @@ import org.acme.entity.Document;
 import org.acme.entity.DocumentEvent;
 import org.acme.entity.DocumentVersion;
 import org.acme.entity.Project;
+import org.acme.entity.ProjectAccess;
 import org.acme.util.HashUtil;
 
 import java.util.List;
 
 /**
  * Перевод доменных сущностей в DTO.
- *
- * <p>Правила:</p>
- * <ul>
- *   <li>Никаких {@code byte[]} наружу: хеши — в hex-строку.</li>
- *   <li>Ленивые связи — в плоские ссылки (UUID), не вложенные объекты.</li>
- *   <li>Поля, которых нет в DTO, не подгружаются из БД.</li>
- * </ul>
  */
 public final class DtoMapper {
 
@@ -34,31 +29,26 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит аккаунт в DTO.
-     *
      * @param account сущность
      * @return DTO
      */
     public static AccountDto toDto(Account account) {
         return new AccountDto(
                 account.id,
-                account.tenantId,
                 account.email,
                 account.displayName,
                 account.status.name(),
+                account.systemRole.name(),
                 account.createdAt);
     }
 
     /**
-     * Маппит проект в DTO.
-     *
      * @param project сущность
      * @return DTO
      */
     public static ProjectDto toDto(Project project) {
         return new ProjectDto(
                 project.id,
-                project.tenantId,
                 project.name,
                 project.description,
                 project.createdAt,
@@ -67,8 +57,6 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит список проектов.
-     *
      * @param list список сущностей
      * @return список DTO
      */
@@ -77,8 +65,6 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит документ в DTO.
-     *
      * @param document сущность
      * @return DTO
      */
@@ -98,8 +84,6 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит список документов.
-     *
      * @param list список сущностей
      * @return список DTO
      */
@@ -108,8 +92,6 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит версию в DTO с метаданными (без контента).
-     *
      * @param version сущность
      * @return DTO
      */
@@ -129,8 +111,6 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит список версий.
-     *
      * @param list список сущностей
      * @return список DTO
      */
@@ -139,10 +119,8 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит событие в DTO. Payload парсится из строки в JSON-узел.
-     *
      * @param event        сущность
-     * @param objectMapper маппер для парсинга payload
+     * @param objectMapper маппер для payload
      * @return DTO
      */
     public static EventDto toDto(DocumentEvent event, ObjectMapper objectMapper) {
@@ -158,10 +136,8 @@ public final class DtoMapper {
     }
 
     /**
-     * Маппит список событий.
-     *
      * @param list         список сущностей
-     * @param objectMapper маппер для парсинга payload
+     * @param objectMapper маппер для payload
      * @return список DTO
      */
     public static List<EventDto> toEventDtos(List<DocumentEvent> list, ObjectMapper objectMapper) {
@@ -169,14 +145,31 @@ public final class DtoMapper {
     }
 
     /**
-     * Парсит JSON-строку payload в {@link JsonNode}.
-     * Некорректная строка означает нарушение целостности данных —
-     * это не «поле пустое», а именно повреждение, поэтому кидаем исключение.
-     *
-     * @param raw          строка из БД
+     * @param access сущность
+     * @return DTO
+     */
+    public static ProjectAccessDto toDto(ProjectAccess access) {
+        return new ProjectAccessDto(
+                access.id,
+                access.project.id,
+                access.account.id,
+                access.role.name(),
+                access.grantedAt,
+                access.grantedBy == null ? null : access.grantedBy.id);
+    }
+
+    /**
+     * @param list список сущностей
+     * @return список DTO
+     */
+    public static List<ProjectAccessDto> toProjectAccessDtos(List<ProjectAccess> list) {
+        return list.stream().map(DtoMapper::toDto).toList();
+    }
+
+    /**
+     * @param raw          JSON-строка
      * @param objectMapper маппер
-     * @return JSON-узел
-     * @throws IllegalStateException если строка не парсится
+     * @return JSON-узел или {@code null}
      */
     private static JsonNode parsePayload(String raw, ObjectMapper objectMapper) {
         if (raw == null || raw.isBlank()) {

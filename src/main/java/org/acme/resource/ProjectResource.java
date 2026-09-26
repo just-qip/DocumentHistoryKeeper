@@ -5,7 +5,6 @@ import jakarta.transaction.Transactional;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
-import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -20,8 +19,10 @@ import org.acme.dto.ProjectDto;
 import org.acme.entity.Account;
 import org.acme.entity.Document;
 import org.acme.entity.Project;
+import org.acme.enums.ProjectRole;
 import org.acme.mapper.DtoMapper;
-import org.acme.service.AccountService;
+import org.acme.security.CurrentAccount;
+import org.acme.service.AccessService;
 import org.acme.service.DocumentService;
 import org.acme.service.ProjectService;
 import org.jboss.resteasy.reactive.RestForm;
@@ -40,67 +41,68 @@ import java.util.UUID;
 @Consumes(MediaType.APPLICATION_JSON)
 public class ProjectResource {
 
-    @Inject
-    ProjectService projects;
-    @Inject
-    DocumentService documents;
-    @Inject
-    AccountService accounts;
+    @Inject ProjectService projects;
+    @Inject DocumentService documents;
+    @Inject AccessService access;
+    @Inject CurrentAccount current;
 
     /**
-     * Тело запроса на создание проекта.
-     *
-     * @param tenantId    тенант
      * @param name        название
      * @param description описание
      */
-    public record CreateProjectRequest(UUID tenantId, String name, String description) {
+    public record CreateProjectRequest(String name, String description) {
     }
 
     /**
-     * Создаёт проект.
+     * Создаёт проект и выдаёт создателю роль OWNER.
      *
      * @param request тело запроса
-     * @param actorId идентификатор актора из заголовка
      * @return 201 и созданный проект
      */
     @POST
-    public Response create(CreateProjectRequest request,
-                           @HeaderParam("X-Account-Id") UUID actorId) {
-        Account actor = accounts.get(actorId);
-        Project project = projects.create(request.tenantId(), request.name(),
-                request.description(), actor);
+    @Transactional
+    public Response create(CreateProjectRequest request) {
+        Account actor = current.get();
+        Project project = projects.create(request.name(), request.description(), actor);
+        access.grant(project.id, actor.id, ProjectRole.OWNER, actor);
         return Response.status(Response.Status.CREATED).entity(DtoMapper.toDto(project)).build();
     }
 
     /**
-     * Постраничный список активных проектов.
+     * Постраничный список проектов, доступных актору.
+     * Администратор видит все проекты.
      *
      * @param page номер страницы
      * @param size размер страницы
      * @return список DTO
      */
     @GET
+    @Transactional
     public List<ProjectDto> list(@QueryParam("page") @DefaultValue("0") int page,
                                  @QueryParam("size") @DefaultValue("20") int size) {
-        return DtoMapper.toProjectDtos(projects.list(page, size));
+        Account actor = current.get();
+        if (access.isAdmin(actor)) {
+            return DtoMapper.toProjectDtos(projects.list(page, size));
+        }
+        List<Project> accessible = Project
+                .find("id in (select pa.project.id from ProjectAccess pa where pa.account.id = ?1) " +
+                        "and archivedAt is null order by createdAt desc", actor.id)
+                .page(page, size)
+                .list();
+        return DtoMapper.toProjectDtos(accessible);
     }
 
     /**
-     * Возвращает проект по id.
-     *
      * @param id идентификатор
      * @return DTO проекта
      */
     @GET
     @Path("/{projectId}")
+    @Transactional
     public ProjectDto get(@PathParam("projectId") UUID id) {
+        access.require(id, current.get(), ProjectRole.VIEWER);
         return DtoMapper.toDto(projects.get(id));
     }
-
-    /* =====================================================
-     *  Документы внутри проекта
-     * ===================================================== */
 
     /**
      * Создаёт документ в проекте и его первую версию.
@@ -109,7 +111,6 @@ public class ProjectResource {
      * @param title     заголовок
      * @param docKind   прикладной тип
      * @param file      загруженный файл
-     * @param actorId   идентификатор актора
      * @param uriInfo   контекст для Location
      * @return 201 и метаданные созданного документа
      * @throws IOException если не удалось прочитать файл
@@ -117,14 +118,16 @@ public class ProjectResource {
     @POST
     @Path("/{projectId}/documents")
     @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @Transactional
     public Response createDocument(@PathParam("projectId") UUID projectId,
                                    @RestForm("title") String title,
                                    @RestForm("docKind") String docKind,
                                    @RestForm("file") FileUpload file,
-                                   @HeaderParam("X-Account-Id") UUID actorId,
                                    @Context UriInfo uriInfo) throws IOException {
 
-        Account actor = accounts.get(actorId);
+        Account actor = current.get();
+        access.require(projectId, actor, ProjectRole.EDITOR);
+
         byte[] content = Files.readAllBytes(file.uploadedFile());
 
         Document document = documents.create(projectId, title, docKind,
@@ -139,8 +142,6 @@ public class ProjectResource {
     }
 
     /**
-     * Список документов проекта.
-     *
      * @param projectId идентификатор проекта
      * @param page      номер страницы
      * @param size      размер страницы
@@ -152,6 +153,8 @@ public class ProjectResource {
     public List<DocumentDto> listDocuments(@PathParam("projectId") UUID projectId,
                                            @QueryParam("page") @DefaultValue("0") int page,
                                            @QueryParam("size") @DefaultValue("50") int size) {
+        access.require(projectId, current.get(), ProjectRole.VIEWER);
+
         List<Document> list = Document
                 .<Document>find("project.id = ?1 and deletedAt is null order by updatedAt desc",
                         projectId)

@@ -1,6 +1,7 @@
 package org.acme.resource;
 
 import jakarta.inject.Inject;
+import jakarta.transaction.Transactional;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
@@ -19,25 +20,19 @@ import org.acme.service.AccountService;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * REST-ресурс управления аккаунтами.
- */
+/** REST-ресурс управления аккаунтами. */
 @Path("/api/accounts")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
 public class AccountResource {
 
-    @Inject
-    AccountService accounts;
+    @Inject AccountService accounts;
 
     /**
-     * Тело запроса на создание аккаунта.
-     *
-     * @param tenantId    тенант
      * @param email       email
      * @param displayName отображаемое имя
      */
-    public record CreateAccountRequest(UUID tenantId, String email, String displayName) {
+    public record CreateAccountRequest(String email, String displayName) {
     }
 
     /**
@@ -47,14 +42,14 @@ public class AccountResource {
      * @return 201 и созданный аккаунт
      */
     @POST
+    @Transactional
     public Response create(CreateAccountRequest request) {
-        Account account = accounts.create(request.tenantId(), request.email(), request.displayName());
-        return Response.status(Response.Status.CREATED).entity(DtoMapper.toDto(account)).build();
+        Account account = accounts.create(request.email(), request.displayName());
+        return Response.status(Response.Status.CREATED)
+                .entity(DtoMapper.toDto(account)).build();
     }
 
     /**
-     * Возвращает аккаунт по id.
-     *
      * @param id идентификатор
      * @return DTO аккаунта
      */
@@ -65,17 +60,19 @@ public class AccountResource {
     }
 
     /**
-     * Постраничный список аккаунтов тенанта.
+     * Постраничный список аккаунтов.
      *
-     * @param tenantId тенант
-     * @param page     номер страницы
-     * @param size     размер страницы
+     * @param page номер страницы
+     * @param size размер страницы
      * @return список DTO
      */
     @GET
-    public List<AccountDto> list(@QueryParam("tenantId") UUID tenantId,
-                                 @QueryParam("page") @DefaultValue("0") int page,
-                                 @QueryParam("size") @DefaultValue("50") int size) {
-        return accounts.list(tenantId, page, size).stream().map(DtoMapper::toDto).toList();
+    @Transactional
+    public List<AccountDto> list(@QueryParam("page") @DefaultValue("0") int page,
+                                 @QueryParam("size") @DefaultValue("500") int size) {
+        List<Account> list = Account.<Account>find("order by displayName")
+                .page(page, Math.min(Math.max(size, 1), 1000))
+                .list();
+        return list.stream().map(DtoMapper::toDto).toList();
     }
 }

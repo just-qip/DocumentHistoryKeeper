@@ -7,7 +7,6 @@ import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DELETE;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
-import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.PATCH;
 import jakarta.ws.rs.POST;
@@ -26,8 +25,10 @@ import org.acme.dto.VersionMetaDto;
 import org.acme.entity.Account;
 import org.acme.entity.Document;
 import org.acme.entity.DocumentVersion;
+import org.acme.enums.ProjectRole;
 import org.acme.mapper.DtoMapper;
-import org.acme.service.AccountService;
+import org.acme.security.CurrentAccount;
+import org.acme.service.AccessService;
 import org.acme.service.DocumentService;
 import org.acme.service.MimeDetector;
 import org.acme.service.TimelineService;
@@ -47,21 +48,20 @@ import java.util.UUID;
 
 /**
  * REST-ресурс документа: метаданные, версии, хронология.
+ *
+ * <p>Актор берётся из {@link CurrentAccount}, который заполняется
+ * фильтром {@code SessionAuthFilter} по сессионному токену.</p>
  */
 @Path("/api/documents")
 @Produces(MediaType.APPLICATION_JSON)
 public class DocumentResource {
 
-    @Inject
-    DocumentService documents;
-    @Inject
-    VersioningService versioning;
-    @Inject
-    TimelineService timeline;
-    @Inject
-    MimeDetector mimeDetector;
-    @Inject
-    AccountService accounts;
+    @Inject DocumentService documents;
+    @Inject VersioningService versioning;
+    @Inject TimelineService timeline;
+    @Inject MimeDetector mimeDetector;
+    @Inject AccessService access;
+    @Inject CurrentAccount current;
 
     /**
      * Тело запроса на обновление метаданных.
@@ -84,11 +84,9 @@ public class DocumentResource {
      */
     @GET
     @Path("/{id}")
+    @Transactional
     public DocumentDto get(@PathParam("id") UUID id) {
-        Document document = Document.findById(id);
-        if (document == null || document.deletedAt != null) {
-            throw new NotFoundException("Document not found");
-        }
+        Document document = requireVisible(id, ProjectRole.VIEWER);
         return DtoMapper.toDto(document);
     }
 
@@ -97,16 +95,16 @@ public class DocumentResource {
      *
      * @param id      идентификатор
      * @param request тело запроса
-     * @param actorId идентификатор актора
      * @return обновлённый DTO
      */
     @PATCH
     @Path("/{id}")
     @Consumes(MediaType.APPLICATION_JSON)
+    @Transactional
     public DocumentDto patch(@PathParam("id") UUID id,
-                             UpdateMetadataRequest request,
-                             @HeaderParam("X-Account-Id") UUID actorId) {
-        Account actor = accounts.get(actorId);
+                             UpdateMetadataRequest request) {
+        requireVisible(id, ProjectRole.EDITOR);
+        Account actor = current.get();
         return DtoMapper.toDto(documents.updateMetadata(id, request.title(),
                 request.docKind(), actor));
     }
@@ -114,17 +112,17 @@ public class DocumentResource {
     /**
      * Помечает документ удалённым.
      *
-     * @param id      идентификатор
-     * @param reason  причина
-     * @param actorId идентификатор актора
+     * @param id     идентификатор
+     * @param reason причина
      * @return 204
      */
     @DELETE
     @Path("/{id}")
+    @Transactional
     public Response delete(@PathParam("id") UUID id,
-                           @QueryParam("reason") String reason,
-                           @HeaderParam("X-Account-Id") UUID actorId) {
-        documents.softDelete(id, accounts.get(actorId), reason);
+                           @QueryParam("reason") String reason) {
+        requireVisible(id, ProjectRole.EDITOR);
+        documents.softDelete(id, current.get(), reason);
         return Response.noContent().build();
     }
 
@@ -140,7 +138,9 @@ public class DocumentResource {
      */
     @GET
     @Path("/{id}/versions")
+    @Transactional
     public List<VersionMetaDto> versions(@PathParam("id") UUID id) {
+        requireVisible(id, ProjectRole.VIEWER);
         List<DocumentVersion> list = DocumentVersion
                 .<DocumentVersion>find("document.id = ?1 order by versionNumber desc", id)
                 .list();
@@ -156,7 +156,9 @@ public class DocumentResource {
      */
     @GET
     @Path("/{id}/versions/{n}")
+    @Transactional
     public VersionMetaDto version(@PathParam("id") UUID id, @PathParam("n") int n) {
+        requireVisible(id, ProjectRole.VIEWER);
         return DtoMapper.toMeta(findVersion(id, n));
     }
 
@@ -172,6 +174,7 @@ public class DocumentResource {
     @Produces(MediaType.APPLICATION_OCTET_STREAM)
     @Transactional
     public Response download(@PathParam("id") UUID id, @PathParam("n") int n) {
+        requireVisible(id, ProjectRole.VIEWER);
         DocumentVersion version = findVersion(id, n);
         byte[] content = version.content;
 
@@ -195,7 +198,6 @@ public class DocumentResource {
      * @param id      идентификатор документа
      * @param file    загруженный файл
      * @param comment комментарий
-     * @param actorId идентификатор актора
      * @param uriInfo контекст для Location
      * @return 201 и метаданные новой версии
      * @throws IOException если не удалось прочитать файл
@@ -203,19 +205,16 @@ public class DocumentResource {
     @POST
     @Path("/{id}/versions")
     @Consumes(MediaType.MULTIPART_FORM_DATA)
+    @Transactional
     public Response uploadVersion(@PathParam("id") UUID id,
                                   @RestForm("file") FileUpload file,
                                   @RestForm("comment") String comment,
-                                  @HeaderParam("X-Account-Id") UUID actorId,
                                   @Context UriInfo uriInfo) throws IOException {
 
-        Account actor = accounts.get(actorId);
-        byte[] content = Files.readAllBytes(file.uploadedFile());
+        requireVisible(id, ProjectRole.EDITOR);
 
-        Document document = Document.findById(id);
-        if (document == null || document.deletedAt != null) {
-            throw new NotFoundException("Document not found");
-        }
+        Account actor = current.get();
+        byte[] content = Files.readAllBytes(file.uploadedFile());
 
         String declared = file.contentType();
         String mime = mimeDetector.isAllowed(declared)
@@ -248,9 +247,11 @@ public class DocumentResource {
      */
     @GET
     @Path("/{id}/timeline")
+    @Transactional
     public TimelinePageDto timeline(@PathParam("id") UUID id,
                                     @QueryParam("before") String beforeIso,
                                     @QueryParam("limit") @DefaultValue("50") int limit) {
+        requireVisible(id, ProjectRole.VIEWER);
         Instant before = (beforeIso == null || beforeIso.isBlank())
                 ? null
                 : Instant.parse(beforeIso);
@@ -260,6 +261,22 @@ public class DocumentResource {
     /* =====================================================
      *  helper
      * ===================================================== */
+
+    /**
+     * Проверяет, что текущий актор имеет доступ к документу.
+     *
+     * @param documentId документ
+     * @param required   требуемая роль
+     * @return найденный документ
+     */
+    private Document requireVisible(UUID documentId, ProjectRole required) {
+        Document document = Document.findById(documentId);
+        if (document == null || document.deletedAt != null) {
+            throw new NotFoundException("Document not found");
+        }
+        access.require(document.project.id, current.get(), required);
+        return document;
+    }
 
     /**
      * Ищет версию по документу и номеру.

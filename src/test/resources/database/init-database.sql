@@ -1,37 +1,85 @@
 CREATE SCHEMA IF NOT EXISTS docs;
 
 -- =========================================================
--- Accounts
+-- Accounts (email глобально уникален)
 -- =========================================================
 CREATE TABLE docs.accounts (
                                id            UUID         PRIMARY KEY,
-                               tenant_id     UUID         NOT NULL,
                                email         VARCHAR(255) NOT NULL,
                                display_name  VARCHAR(255) NOT NULL,
                                status        VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
+                               system_role   VARCHAR(16)  NOT NULL DEFAULT 'USER',
+                               salt          BYTEA,
+                               verifier      BYTEA,
                                created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
-                               CONSTRAINT uq_accounts_tenant_email UNIQUE (tenant_id, email),
-                               CONSTRAINT ck_accounts_status CHECK (status IN ('ACTIVE', 'BLOCKED', 'DELETED'))
+                               CONSTRAINT uq_accounts_email UNIQUE (email),
+                               CONSTRAINT ck_accounts_status
+                                   CHECK (status IN ('ACTIVE', 'BLOCKED', 'DELETED')),
+                               CONSTRAINT ck_accounts_system_role
+                                   CHECK (system_role IN ('USER', 'ADMIN')),
+                               CONSTRAINT ck_accounts_salt_len
+                                   CHECK (salt IS NULL OR octet_length(salt) BETWEEN 16 AND 64),
+                               CONSTRAINT ck_accounts_verifier_len
+                                   CHECK (verifier IS NULL OR octet_length(verifier) BETWEEN 64 AND 256)
 );
-CREATE INDEX idx_accounts_tenant ON docs.accounts (tenant_id);
 
 -- =========================================================
--- Projects
+-- Sessions
+-- =========================================================
+CREATE TABLE docs.sessions (
+                               id           UUID        PRIMARY KEY,
+                               account_id   UUID        NOT NULL,
+                               token_hash   BYTEA       NOT NULL,
+                               created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                               expires_at   TIMESTAMPTZ NOT NULL,
+                               last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                               CONSTRAINT uq_sessions_token UNIQUE (token_hash),
+                               CONSTRAINT fk_sessions_account
+                                   FOREIGN KEY (account_id) REFERENCES docs.accounts (id) ON DELETE CASCADE,
+                               CONSTRAINT ck_sessions_token_len
+                                   CHECK (octet_length(token_hash) = 32)
+);
+CREATE INDEX idx_sessions_account ON docs.sessions (account_id);
+CREATE INDEX idx_sessions_expires ON docs.sessions (expires_at);
+
+-- =========================================================
+-- Projects (name глобально уникален)
 -- =========================================================
 CREATE TABLE docs.projects (
                                id            UUID         PRIMARY KEY,
-                               tenant_id     UUID         NOT NULL,
                                name          VARCHAR(255) NOT NULL,
                                description   TEXT,
                                created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
                                created_by    UUID         NOT NULL,
                                archived_at   TIMESTAMPTZ,
-                               CONSTRAINT uq_projects_tenant_name UNIQUE (tenant_id, name),
+                               CONSTRAINT uq_projects_name UNIQUE (name),
                                CONSTRAINT fk_projects_created_by
                                    FOREIGN KEY (created_by) REFERENCES docs.accounts (id)
 );
-CREATE INDEX idx_projects_tenant     ON docs.projects (tenant_id);
 CREATE INDEX idx_projects_created_by ON docs.projects (created_by);
+
+-- =========================================================
+-- Project access
+-- =========================================================
+CREATE TABLE docs.project_access (
+                                     id         UUID        PRIMARY KEY,
+                                     project_id UUID        NOT NULL,
+                                     account_id UUID        NOT NULL,
+                                     role       VARCHAR(16) NOT NULL,
+                                     granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                     granted_by UUID,
+                                     CONSTRAINT uq_project_access UNIQUE (project_id, account_id),
+                                     CONSTRAINT ck_project_access_role
+                                         CHECK (role IN ('VIEWER', 'EDITOR', 'OWNER')),
+                                     CONSTRAINT fk_project_access_project
+                                         FOREIGN KEY (project_id) REFERENCES docs.projects (id) ON DELETE CASCADE,
+                                     CONSTRAINT fk_project_access_account
+                                         FOREIGN KEY (account_id) REFERENCES docs.accounts (id) ON DELETE CASCADE,
+                                     CONSTRAINT fk_project_access_granted_by
+                                         FOREIGN KEY (granted_by) REFERENCES docs.accounts (id) ON DELETE SET NULL
+);
+CREATE INDEX idx_project_access_account ON docs.project_access (account_id);
+CREATE INDEX idx_project_access_project ON docs.project_access (project_id);
 
 -- =========================================================
 -- Documents
@@ -84,18 +132,18 @@ CREATE TABLE docs.document_versions (
                                             FOREIGN KEY (parent_version_id) REFERENCES docs.document_versions (id),
                                         CONSTRAINT fk_versions_author
                                             FOREIGN KEY (author_id) REFERENCES docs.accounts (id),
-                                        CONSTRAINT ck_versions_size     CHECK (size_bytes >= 0 AND size_bytes <= 15728640),
-                                        CONSTRAINT ck_versions_hash_len CHECK (octet_length(content_hash) = 32)
+                                        CONSTRAINT ck_versions_size
+                                            CHECK (size_bytes >= 0 AND size_bytes <= 15728640),
+                                        CONSTRAINT ck_versions_hash_len
+                                            CHECK (octet_length(content_hash) = 32)
 );
 CREATE INDEX idx_versions_document ON docs.document_versions (document_id, version_number DESC);
 CREATE INDEX idx_versions_author   ON docs.document_versions (author_id);
 CREATE INDEX idx_versions_hash     ON docs.document_versions (content_hash);
-
--- Хранить байты в TOAST без попыток сжатия: JPEG/PDF/PNG/ZIP не сжимаются.
 ALTER TABLE docs.document_versions ALTER COLUMN content SET STORAGE EXTERNAL;
 
 -- =========================================================
--- Document events (append-only, хеш-цепочка)
+-- Document events
 -- =========================================================
 CREATE TABLE docs.document_events (
                                       id              BIGSERIAL    PRIMARY KEY,
@@ -120,8 +168,10 @@ CREATE TABLE docs.document_events (
                                                                                       'CREATED', 'UPLOADED', 'METADATA_CHANGED', 'STATUS_CHANGED',
                                                                                       'DELETED', 'RESTORED', 'COMMENTED', 'ROLLED_BACK'
                                           )),
-                                      CONSTRAINT ck_events_hash_len      CHECK (octet_length(event_hash) = 32),
-                                      CONSTRAINT ck_events_prev_hash_len CHECK (prev_event_hash IS NULL OR octet_length(prev_event_hash) = 32)
+                                      CONSTRAINT ck_events_hash_len
+                                          CHECK (octet_length(event_hash) = 32),
+                                      CONSTRAINT ck_events_prev_hash_len
+                                          CHECK (prev_event_hash IS NULL OR octet_length(prev_event_hash) = 32)
 );
 CREATE INDEX idx_events_document_time ON docs.document_events (document_id, occurred_at DESC, id DESC);
 CREATE INDEX idx_events_project_time  ON docs.document_events (project_id, occurred_at DESC);
