@@ -65,7 +65,9 @@ public class ProjectResource {
         Account actor = current.get();
         Project project = projects.create(request.name(), request.description(), actor);
         access.grant(project.id, actor.id, ProjectRole.OWNER, actor);
-        return Response.status(Response.Status.CREATED).entity(DtoMapper.toDto(project)).build();
+        return Response.status(Response.Status.CREATED)
+                .entity(DtoMapper.toDto(project, "OWNER"))
+                .build();
     }
 
     /**
@@ -93,6 +95,8 @@ public class ProjectResource {
     }
 
     /**
+     * Возвращает проект по id вместе с ролью текущего пользователя.
+     *
      * @param id идентификатор
      * @return DTO проекта
      */
@@ -100,8 +104,18 @@ public class ProjectResource {
     @Path("/{projectId}")
     @Transactional
     public ProjectDto get(@PathParam("projectId") UUID id) {
-        access.require(id, current.get(), ProjectRole.VIEWER);
-        return DtoMapper.toDto(projects.get(id));
+        Account actor = current.get();
+        access.require(id, actor, ProjectRole.VIEWER);
+
+        String myRole;
+        if (access.isAdmin(actor)) {
+            myRole = "ADMIN";
+        } else {
+            ProjectRole r = access.roleIn(id, actor.id);
+            myRole = r == null ? null : r.name();
+        }
+
+        return DtoMapper.toDto(projects.get(id), myRole);
     }
 
     /**
@@ -142,6 +156,8 @@ public class ProjectResource {
     }
 
     /**
+     * Список документов проекта.
+     *
      * @param projectId идентификатор проекта
      * @param page      номер страницы
      * @param size      размер страницы

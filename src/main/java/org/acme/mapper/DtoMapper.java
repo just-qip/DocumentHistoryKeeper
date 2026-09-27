@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.acme.dto.AccountDto;
+import org.acme.dto.AccessCandidateDto;
 import org.acme.dto.DocumentDto;
 import org.acme.dto.EventDto;
 import org.acme.dto.ProjectAccessDto;
@@ -44,22 +45,55 @@ public final class DtoMapper {
     }
 
     /**
+     * @param account сущность
+     * @return DTO кандидата для добавления в проект
+     */
+    public static AccessCandidateDto toCandidate(Account account) {
+        String avatarUrl = account.avatarUpdatedAt == null
+                ? null
+                : "/auth/avatar/" + account.id + "?v=" + account.avatarUpdatedAt.toEpochMilli();
+        return new AccessCandidateDto(
+                account.id,
+                account.email,
+                account.displayName,
+                avatarUrl);
+    }
+
+    /**
+     * @param list список сущностей
+     * @return список DTO кандидатов
+     */
+    public static List<AccessCandidateDto> toCandidates(List<Account> list) {
+        return list.stream().map(DtoMapper::toCandidate).toList();
+    }
+
+    /**
      * @param project сущность
-     * @return DTO
+     * @return DTO без роли текущего пользователя
      */
     public static ProjectDto toDto(Project project) {
+        return toDto(project, null);
+    }
+
+    /**
+     * @param project сущность
+     * @param myRole  роль текущего пользователя (или {@code null})
+     * @return DTO
+     */
+    public static ProjectDto toDto(Project project, String myRole) {
         return new ProjectDto(
                 project.id,
                 project.name,
                 project.description,
                 project.createdAt,
                 project.createdBy.id,
-                project.archivedAt);
+                project.archivedAt,
+                myRole);
     }
 
     /**
      * @param list список сущностей
-     * @return список DTO
+     * @return список DTO без ролей
      */
     public static List<ProjectDto> toProjectDtos(List<Project> list) {
         return list.stream().map(DtoMapper::toDto).toList();
@@ -150,10 +184,19 @@ public final class DtoMapper {
      * @return DTO
      */
     public static ProjectAccessDto toDto(ProjectAccess access) {
+        Account target = access.account;
+
+        String avatarUrl = target.avatarUpdatedAt == null
+                ? null
+                : "/auth/avatar/" + target.id + "?v=" + target.avatarUpdatedAt.toEpochMilli();
+
         return new ProjectAccessDto(
                 access.id,
                 access.project.id,
-                access.account.id,
+                target.id,
+                target.displayName,
+                target.email,
+                avatarUrl,
                 access.role.name(),
                 access.grantedAt,
                 access.grantedBy == null ? null : access.grantedBy.id);

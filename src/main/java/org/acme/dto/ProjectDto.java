@@ -12,6 +12,8 @@ import java.util.UUID;
  * @param createdAt   момент создания
  * @param createdBy   id создателя
  * @param archivedAt  момент архивации или {@code null}
+ * @param myRole      роль текущего пользователя в проекте:
+ *                    ADMIN / OWNER / EDITOR / VIEWER или {@code null}
  */
 public record ProjectDto(
         UUID id,
@@ -19,5 +21,6 @@ public record ProjectDto(
         String description,
         Instant createdAt,
         UUID createdBy,
-        Instant archivedAt) {
+        Instant archivedAt,
+        String myRole) {
 }
