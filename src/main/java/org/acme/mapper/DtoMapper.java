@@ -39,6 +39,7 @@ public final class DtoMapper {
                 account.displayName,
                 account.status.name(),
                 account.systemRole.name(),
+                account.avatarUpdatedAt,
                 account.createdAt);
     }
 

@@ -6,12 +6,13 @@ import java.util.UUID;
 /**
  * Публичное представление аккаунта.
  *
- * @param id          идентификатор
- * @param email       email
- * @param displayName отображаемое имя
- * @param status      строковое представление статуса
- * @param systemRole  системная роль (USER / ADMIN)
- * @param createdAt   момент создания
+ * @param id              идентификатор
+ * @param email           email
+ * @param displayName     отображаемое имя
+ * @param status          строковый статус
+ * @param systemRole      системная роль (USER / ADMIN)
+ * @param avatarUpdatedAt момент обновления аватара или {@code null}
+ * @param createdAt       момент создания
  */
 public record AccountDto(
         UUID id,
@@ -19,5 +20,6 @@ public record AccountDto(
         String displayName,
         String status,
         String systemRole,
+        Instant avatarUpdatedAt,
         Instant createdAt) {
 }

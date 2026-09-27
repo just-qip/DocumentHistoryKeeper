@@ -21,8 +21,10 @@ public final class AuthDto {
      *
      * @param accountId   идентификатор
      * @param displayName отображаемое имя
+     * @param avatarUrl   путь к публичному аватару (относительно apiBaseUrl)
+     *                    или {@code null}, если аватара нет
      */
-    public record AccountChoice(UUID accountId, String displayName) {
+    public record AccountChoice(UUID accountId, String displayName, String avatarUrl) {
     }
 
     /**

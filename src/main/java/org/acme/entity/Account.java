@@ -53,9 +53,21 @@ public class Account extends PanacheEntityBase {
     @Column(length = 64)
     public byte[] salt;
 
-    /** SRP6: verifier = g^x mod N, big-endian 128 байт. */
+    /** SRP6: verifier = g^x mod N. */
     @Column(length = 256)
     public byte[] verifier;
+
+    /** Байты аватара. Хранится в TOAST. */
+    @Column
+    public byte[] avatar;
+
+    /** MIME аватара: image/png, image/jpeg, image/webp, image/gif. */
+    @Column(name = "avatar_mime", length = 64)
+    public String avatarMime;
+
+    /** Момент последнего обновления аватара. */
+    @Column(name = "avatar_updated_at")
+    public Instant avatarUpdatedAt;
 
     @PrePersist
     void prePersist() {

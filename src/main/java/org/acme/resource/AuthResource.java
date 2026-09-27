@@ -10,6 +10,7 @@ import jakarta.ws.rs.HeaderParam;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
@@ -21,6 +22,7 @@ import org.acme.service.SrpChallengeStore;
 import org.acme.service.SrpService;
 import org.acme.service.SessionService;
 
+import java.io.ByteArrayInputStream;
 import java.math.BigInteger;
 import java.util.HexFormat;
 import java.util.UUID;
@@ -46,7 +48,7 @@ public class AuthResource {
      * Ищет активный аккаунт по email.
      *
      * @param req email
-     * @return краткие сведения или {@code null}
+     * @return краткая информация или {@code null}
      */
     @POST
     @Path("/lookup")
@@ -57,7 +59,40 @@ public class AuthResource {
         Account a = Account.find("email = ?1 and status = ?2 and salt is not null",
                 req.email().trim(), Account.Status.ACTIVE).firstResult();
         if (a == null) return null;
-        return new AuthDto.AccountChoice(a.id, a.displayName);
+
+        // Публичная ссылка на аватар (относительно apiBaseUrl). Если аватара нет —
+        // фронт нарисует fallback с инициалом. Версия в query защищает от
+        // залипшего клиентского HTTP-кэша после смены аватара.
+        String avatarUrl = a.avatarUpdatedAt == null
+                ? null
+                : "/auth/avatar/" + a.id + "?v=" + a.avatarUpdatedAt.toEpochMilli();
+
+        return new AuthDto.AccountChoice(a.id, a.displayName, avatarUrl);
+    }
+
+    /**
+     * Публичная отдача аватара — нужна на экране логина, до аутентификации.
+     * Путь лежит под {@code auth/*}, поэтому SessionAuthFilter его пропускает.
+     *
+     * <p>Осознанный компромисс: аватар виден по UUID аккаунта. UUID и так
+     * возвращается в lookup — узнать его можно только зная email.</p>
+     *
+     * @param accountId идентификатор аккаунта
+     * @return бинарный ответ
+     */
+    @GET
+    @Path("/avatar/{accountId}")
+    @Produces(MediaType.APPLICATION_OCTET_STREAM)
+    public Response publicAvatar(@PathParam("accountId") UUID accountId) {
+        Account a = Account.findById(accountId);
+        if (a == null || a.avatar == null || a.avatarMime == null) {
+            throw new NotFoundException("no avatar");
+        }
+        return Response.ok(new ByteArrayInputStream(a.avatar))
+                .header("Content-Type", a.avatarMime)
+                .header("Content-Length", a.avatar.length)
+                .header("Cache-Control", "public, max-age=300")
+                .build();
     }
 
     /**

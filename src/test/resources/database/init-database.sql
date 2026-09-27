@@ -1,17 +1,20 @@
 CREATE SCHEMA IF NOT EXISTS docs;
 
 -- =========================================================
--- Accounts (email глобально уникален)
+-- Accounts
 -- =========================================================
 CREATE TABLE docs.accounts (
-                               id            UUID         PRIMARY KEY,
-                               email         VARCHAR(255) NOT NULL,
-                               display_name  VARCHAR(255) NOT NULL,
-                               status        VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
-                               system_role   VARCHAR(16)  NOT NULL DEFAULT 'USER',
-                               salt          BYTEA,
-                               verifier      BYTEA,
-                               created_at    TIMESTAMPTZ  NOT NULL DEFAULT now(),
+                               id                  UUID         PRIMARY KEY,
+                               email               VARCHAR(255) NOT NULL,
+                               display_name        VARCHAR(255) NOT NULL,
+                               status              VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',
+                               system_role         VARCHAR(16)  NOT NULL DEFAULT 'USER',
+                               salt                BYTEA,
+                               verifier            BYTEA,
+                               avatar              BYTEA,
+                               avatar_mime         VARCHAR(64),
+                               avatar_updated_at   TIMESTAMPTZ,
+                               created_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
                                CONSTRAINT uq_accounts_email UNIQUE (email),
                                CONSTRAINT ck_accounts_status
                                    CHECK (status IN ('ACTIVE', 'BLOCKED', 'DELETED')),
@@ -20,8 +23,20 @@ CREATE TABLE docs.accounts (
                                CONSTRAINT ck_accounts_salt_len
                                    CHECK (salt IS NULL OR octet_length(salt) BETWEEN 16 AND 64),
                                CONSTRAINT ck_accounts_verifier_len
-                                   CHECK (verifier IS NULL OR octet_length(verifier) BETWEEN 64 AND 256)
+                                   CHECK (verifier IS NULL OR octet_length(verifier) BETWEEN 64 AND 256),
+                               CONSTRAINT ck_accounts_avatar_mime
+                                   CHECK (avatar_mime IS NULL OR avatar_mime IN (
+                                                                                 'image/png', 'image/jpeg', 'image/webp', 'image/gif'
+                                       )),
+                               CONSTRAINT ck_accounts_avatar_size
+                                   CHECK (avatar IS NULL OR octet_length(avatar) BETWEEN 1 AND 2097152),
+                               CONSTRAINT ck_accounts_avatar_consistency
+                                   CHECK (
+                                       (avatar IS NULL AND avatar_mime IS NULL) OR
+                                       (avatar IS NOT NULL AND avatar_mime IS NOT NULL)
+                                       )
 );
+ALTER TABLE docs.accounts ALTER COLUMN avatar SET STORAGE EXTERNAL;
 
 -- =========================================================
 -- Sessions
@@ -43,7 +58,7 @@ CREATE INDEX idx_sessions_account ON docs.sessions (account_id);
 CREATE INDEX idx_sessions_expires ON docs.sessions (expires_at);
 
 -- =========================================================
--- Projects (name глобально уникален)
+-- Projects
 -- =========================================================
 CREATE TABLE docs.projects (
                                id            UUID         PRIMARY KEY,
@@ -140,10 +155,12 @@ CREATE TABLE docs.document_versions (
 CREATE INDEX idx_versions_document ON docs.document_versions (document_id, version_number DESC);
 CREATE INDEX idx_versions_author   ON docs.document_versions (author_id);
 CREATE INDEX idx_versions_hash     ON docs.document_versions (content_hash);
+
+-- Хранить байты в TOAST без попыток сжатия: JPEG/PDF/PNG/ZIP не сжимаются.
 ALTER TABLE docs.document_versions ALTER COLUMN content SET STORAGE EXTERNAL;
 
 -- =========================================================
--- Document events
+-- Document events (append-only, хеш-цепочка)
 -- =========================================================
 CREATE TABLE docs.document_events (
                                       id              BIGSERIAL    PRIMARY KEY,
@@ -177,3 +194,20 @@ CREATE INDEX idx_events_document_time ON docs.document_events (document_id, occu
 CREATE INDEX idx_events_project_time  ON docs.document_events (project_id, occurred_at DESC);
 CREATE INDEX idx_events_actor         ON docs.document_events (actor_id);
 CREATE INDEX idx_events_type          ON docs.document_events (event_type, occurred_at DESC);
+
+-- =========================================================
+-- Бэкфилл: создатели существующих проектов становятся OWNER
+-- =========================================================
+INSERT INTO docs.project_access (id, project_id, account_id, role, granted_at, granted_by)
+SELECT gen_random_uuid(), p.id, p.created_by, 'OWNER', p.created_at, p.created_by
+FROM docs.projects p
+WHERE p.created_by IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM docs.project_access pa
+    WHERE pa.project_id = p.id AND pa.account_id = p.created_by
+);
+
+-- =========================================================
+-- (Опционально) Назначить первого администратора
+-- =========================================================
+-- UPDATE docs.accounts SET system_role = 'ADMIN' WHERE email = 'admin@example.com';
