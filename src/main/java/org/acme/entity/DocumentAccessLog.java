@@ -18,7 +18,7 @@ import org.acme.enums.AccessAction;
 import java.time.Instant;
 import java.util.UUID;
 
-/** Запись аудита: чтение или скачивание документа. Append-only. */
+/** Запись аудита: чтение, скачивание или отказанная попытка. Append-only. */
 @Entity
 @Table(schema = "docs", name = "document_access_log")
 public class DocumentAccessLog extends PanacheEntityBase {
@@ -41,10 +41,15 @@ public class DocumentAccessLog extends PanacheEntityBase {
     @JoinColumn(name = "version_id", insertable = false, updatable = false)
     public DocumentVersion version;
 
-    @Column(name = "account_id", nullable = false)
+    /** Номер версии, к которой пытались обратиться, но не имели доступа. */
+    @Column(name = "attempted_version_number")
+    public Integer attemptedVersionNumber;
+
+    /** Аккаунт или null для анонимных попыток. */
+    @Column(name = "account_id")
     public UUID accountId;
 
-    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "account_id", insertable = false, updatable = false)
     public Account account;
 
@@ -69,6 +74,10 @@ public class DocumentAccessLog extends PanacheEntityBase {
 
     @Column(name = "browser_name", length = 64)
     public String browserName;
+
+    /** NULL = успешный доступ; иначе — причина отказа. */
+    @Column(name = "denied_reason", length = 32)
+    public String deniedReason;
 
     @PrePersist
     void prePersist() {

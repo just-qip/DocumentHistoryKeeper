@@ -84,7 +84,7 @@ public class DocumentResource {
     @Path("/{id}")
     @Transactional
     public DocumentDto get(@PathParam("id") UUID id) {
-        Document document = requireVisible(id, ProjectRole.VIEWER);
+        Document document = requireVisible(id, ProjectRole.VIEWER, AccessAction.VIEW);
         audit.record(document.id, null, current.get(), AccessAction.VIEW);
         return DtoMapper.toDto(document);
     }
@@ -102,7 +102,7 @@ public class DocumentResource {
     @Transactional
     public DocumentDto patch(@PathParam("id") UUID id,
                              UpdateMetadataRequest request) {
-        requireVisible(id, ProjectRole.EDITOR);
+        requireVisible(id, ProjectRole.EDITOR, null);
         Account actor = current.get();
         return DtoMapper.toDto(documents.updateMetadata(id, request.title(),
                 request.docKind(), actor));
@@ -120,7 +120,7 @@ public class DocumentResource {
     @Transactional
     public Response delete(@PathParam("id") UUID id,
                            @QueryParam("reason") String reason) {
-        requireVisible(id, ProjectRole.EDITOR);
+        requireVisible(id, ProjectRole.EDITOR, null);
         documents.softDelete(id, current.get(), reason);
         return Response.noContent().build();
     }
@@ -139,7 +139,7 @@ public class DocumentResource {
     @Path("/{id}/versions")
     @Transactional
     public List<VersionMetaDto> versions(@PathParam("id") UUID id) {
-        requireVisible(id, ProjectRole.VIEWER);
+        requireVisible(id, ProjectRole.VIEWER, AccessAction.VIEW);
         List<DocumentVersion> list = DocumentVersion
                 .<DocumentVersion>find("document.id = ?1 order by versionNumber desc", id)
                 .list();
@@ -157,17 +157,17 @@ public class DocumentResource {
     @Path("/{id}/versions/{n}")
     @Transactional
     public VersionMetaDto version(@PathParam("id") UUID id, @PathParam("n") int n) {
-        requireVisible(id, ProjectRole.VIEWER);
+        requireVisible(id, ProjectRole.VIEWER, AccessAction.VIEW);
         return DtoMapper.toMeta(findVersion(id, n));
     }
 
     /**
-     * Отдаёт контент версии как поток байтов. Пишет в аудит PREVIEW
-     * или DOWNLOAD в зависимости от {@code mode}.
+     * Отдаёт контент версии. Пишет в аудит PREVIEW или DOWNLOAD
+     * в зависимости от {@code mode}.
      *
      * @param id   идентификатор документа
      * @param n    номер версии
-     * @param mode preview или download (по умолчанию download)
+     * @param mode preview или download
      * @return бинарный ответ
      */
     @GET
@@ -177,12 +177,13 @@ public class DocumentResource {
     public Response download(@PathParam("id") UUID id,
                              @PathParam("n") int n,
                              @QueryParam("mode") @DefaultValue("download") String mode) {
-        Document document = requireVisible(id, ProjectRole.VIEWER);
-        DocumentVersion version = findVersion(id, n);
-
         AccessAction action = "preview".equalsIgnoreCase(mode)
                 ? AccessAction.PREVIEW
                 : AccessAction.DOWNLOAD;
+
+        Document document = requireVisible(id, ProjectRole.VIEWER, action);
+        DocumentVersion version = findVersion(id, n);
+
         audit.record(document.id, version.id, current.get(), action);
 
         byte[] content = version.content;
@@ -190,7 +191,6 @@ public class DocumentResource {
         String encodedName = URLEncoder.encode(version.originalName, StandardCharsets.UTF_8)
                 .replace("+", "%20");
 
-        // Для preview — inline, чтобы браузер мог отобразить без скачивания
         String dispositionType = action == AccessAction.PREVIEW ? "inline" : "attachment";
         String disposition = dispositionType + "; filename=\"" + version.originalName + "\"; " +
                 "filename*=UTF-8''" + encodedName;
@@ -222,7 +222,7 @@ public class DocumentResource {
                                   @RestForm("comment") String comment,
                                   @Context UriInfo uriInfo) throws IOException {
 
-        requireVisible(id, ProjectRole.EDITOR);
+        requireVisible(id, ProjectRole.EDITOR, null);
 
         Account actor = current.get();
         byte[] content = Files.readAllBytes(file.uploadedFile());
@@ -262,7 +262,7 @@ public class DocumentResource {
     public TimelinePageDto timeline(@PathParam("id") UUID id,
                                     @QueryParam("before") String beforeIso,
                                     @QueryParam("limit") @DefaultValue("50") int limit) {
-        requireVisible(id, ProjectRole.VIEWER);
+        requireVisible(id, ProjectRole.VIEWER, AccessAction.VIEW);
         Instant before = (beforeIso == null || beforeIso.isBlank())
                 ? null
                 : Instant.parse(beforeIso);
@@ -273,15 +273,42 @@ public class DocumentResource {
      *  helper
      * ===================================================== */
 
-    private Document requireVisible(UUID documentId, ProjectRole required) {
+    /**
+     * Проверяет доступ к документу. При отказе и ненулевом
+     * {@code auditAction} пишет запись в аудит с причиной.
+     *
+     * @param documentId  документ
+     * @param required    требуемая роль
+     * @param auditAction действие для аудита (nullable — для write-операций)
+     * @return найденный документ
+     */
+    private Document requireVisible(UUID documentId,
+                                    ProjectRole required,
+                                    AccessAction auditAction) {
         Document document = Document.findById(documentId);
         if (document == null || document.deletedAt != null) {
+            if (auditAction != null) {
+                audit.recordDenied(documentId, auditAction, null,
+                        current.get(), "NOT_FOUND");
+            }
             throw new NotFoundException("Document not found");
         }
-        access.require(document.project.id, current.get(), required);
+        Account actor = current.get();
+        if (!access.hasAccess(document.project.id, actor, required)) {
+            if (auditAction != null) {
+                audit.recordDenied(documentId, auditAction, null,
+                        actor, "NO_ACCESS");
+            }
+            throw new jakarta.ws.rs.ForbiddenException("Недостаточно прав на проект");
+        }
         return document;
     }
 
+    /**
+     * @param documentId документ
+     * @param number     номер версии
+     * @return найденная версия
+     */
     private DocumentVersion findVersion(UUID documentId, int number) {
         DocumentVersion version = DocumentVersion
                 .find("document.id = ?1 and versionNumber = ?2", documentId, number)

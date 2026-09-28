@@ -25,27 +25,47 @@ import java.util.UUID;
 @ApplicationScoped
 public class AuditService {
 
+    /** Верхняя граница размера страницы. */
+    private static final int MAX_PAGE_SIZE = 200;
+
     @Inject RequestMetaProvider metaProvider;
 
     /**
-     * Пишет запись аудита. Вызывается из ресурсов после проверки доступа —
-     * то есть логируем только успешные действия.
-     *
-     * @param documentId документ
-     * @param versionId  версия (для VIEW = null)
-     * @param actor      кто
-     * @param action     действие
+     * Пишет запись успешного доступа.
      */
     @Transactional
     public void record(UUID documentId, UUID versionId, Account actor, AccessAction action) {
+        write(documentId, versionId, null, actor, action, null);
+    }
+
+    /**
+     * Пишет запись отказанной попытки. Транзакция независимая.
+     */
+    @Transactional(Transactional.TxType.REQUIRES_NEW)
+    public void recordDenied(UUID documentId,
+                             AccessAction action,
+                             Integer attemptedVersionNumber,
+                             Account actor,
+                             String reason) {
+        write(documentId, null, attemptedVersionNumber, actor, action, reason);
+    }
+
+    private void write(UUID documentId,
+                       UUID versionId,
+                       Integer attemptedVersionNumber,
+                       Account actor,
+                       AccessAction action,
+                       String deniedReason) {
         var meta = metaProvider.current();
         var parsed = UserAgentParser.parse(meta.userAgent());
 
         DocumentAccessLog log = new DocumentAccessLog();
         log.documentId = documentId;
         log.versionId = versionId;
-        log.accountId = actor.id;
+        log.attemptedVersionNumber = attemptedVersionNumber;
+        log.accountId = actor == null ? null : actor.id;
         log.action = action;
+        log.deniedReason = deniedReason;
         log.ipAddress = meta.ip();
         log.userAgent = meta.userAgent();
         log.deviceType = parsed.device();
@@ -55,16 +75,17 @@ public class AuditService {
     }
 
     /**
-     * Постраничный список записей аудита.
+     * Страница записей аудита.
      *
      * @param documentId     документ
-     * @param action         фильтр по действию или null
-     * @param accountId      фильтр по аккаунту или null
-     * @param versionId      фильтр по конкретной версии или null
-     * @param withoutVersion если {@code true} — только записи без версии (VIEW)
-     * @param before         курсор (occurred_at &lt;) или null
-     * @param limit          размер страницы
-     * @return страница с курсором
+     * @param action         фильтр по действию
+     * @param accountId      фильтр по аккаунту
+     * @param versionId      фильтр по конкретной версии
+     * @param withoutVersion только записи без привязки к версии
+     * @param deniedOnly     только отказанные попытки
+     * @param page           номер страницы (0-based)
+     * @param size           размер страницы
+     * @return страница с общим количеством
      */
     @Transactional
     public AccessLogDtos.AccessLogPageDto list(UUID documentId,
@@ -72,62 +93,66 @@ public class AuditService {
                                                UUID accountId,
                                                UUID versionId,
                                                boolean withoutVersion,
-                                               Instant before,
-                                               int limit) {
-        int size = Math.min(Math.max(limit, 1), 200);
+                                               boolean deniedOnly,
+                                               int page,
+                                               int size) {
+        int safeSize = Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
+        int safePage = Math.max(page, 0);
 
-        StringBuilder jpql = new StringBuilder(
-                "select l from DocumentAccessLog l " +
-                        "join fetch l.account " +
-                        "left join fetch l.version " +
-                        "where l.documentId = :docId");
+        // Общая часть WHERE, одинаковая для выборки и count.
+        StringBuilder where = new StringBuilder(" where l.documentId = :docId");
         Map<String, Object> params = new HashMap<>();
         params.put("docId", documentId);
 
         if (action != null) {
-            jpql.append(" and l.action = :action");
+            where.append(" and l.action = :action");
             params.put("action", action);
         }
         if (accountId != null) {
-            jpql.append(" and l.accountId = :accountId");
+            where.append(" and l.accountId = :accountId");
             params.put("accountId", accountId);
         }
+        if (deniedOnly) {
+            where.append(" and l.deniedReason is not null");
+        }
         if (withoutVersion) {
-            jpql.append(" and l.versionId is null");
+            where.append(" and l.versionId is null and l.deniedReason is null");
         } else if (versionId != null) {
-            jpql.append(" and l.versionId = :versionId");
+            where.append(" and l.versionId = :versionId");
             params.put("versionId", versionId);
         }
-        if (before != null) {
-            jpql.append(" and l.occurredAt < :before");
-            params.put("before", before);
-        }
-        jpql.append(" order by l.occurredAt desc, l.id desc");
+
+        // 1) count
+        long total = DocumentAccessLog
+                .find("select count(l) from DocumentAccessLog l" + where, params)
+                .project(Long.class)
+                .firstResult();
+
+        int totalPages = total == 0 ? 0 : (int) ((total + safeSize - 1) / safeSize);
+
+        // 2) выборка страницы с join fetch на account/version
+        String dataJpql =
+                "select l from DocumentAccessLog l " +
+                        "left join fetch l.account " +
+                        "left join fetch l.version " +
+                        where +
+                        " order by l.occurredAt desc, l.id desc";
 
         List<DocumentAccessLog> rows = DocumentAccessLog
-                .find(jpql.toString(), params)
-                .page(0, size + 1)
+                .find(dataJpql, params)
+                .page(safePage, safeSize)
                 .list();
-
-        Instant nextCursor = null;
-        if (rows.size() > size) {
-            DocumentAccessLog last = rows.get(size - 1);
-            nextCursor = last.occurredAt;
-            rows = rows.subList(0, size);
-        }
 
         List<AccessLogDtos.AccessLogEntryDto> dtos = rows.stream()
                 .map(this::toEntry)
                 .toList();
 
-        return new AccessLogDtos.AccessLogPageDto(documentId, dtos, nextCursor);
+        return new AccessLogDtos.AccessLogPageDto(
+                documentId, dtos, safePage, safeSize, total, totalPages);
     }
 
     /**
      * Агрегированная статистика по документу.
-     *
-     * @param documentId документ
-     * @return статистика
      */
     @Transactional
     public AccessLogDtos.AccessLogStatsDto stats(UUID documentId) {
@@ -136,7 +161,7 @@ public class AuditService {
                 .createQuery(
                         "select l.versionId, l.action, count(l), max(l.occurredAt) " +
                                 "from DocumentAccessLog l " +
-                                "where l.documentId = :docId " +
+                                "where l.documentId = :docId and l.deniedReason is null " +
                                 "group by l.versionId, l.action",
                         Object[].class)
                 .setParameter("docId", documentId)
@@ -160,10 +185,11 @@ public class AuditService {
 
             perVersionRaw.computeIfAbsent(versionId, k -> new HashMap<>())
                     .merge(action, new long[]{count}, (a, b) -> new long[]{a[0] + b[0]});
-            perVersionLast.merge(versionId,
-                    lastAt,
-                    (a, b) -> a.isAfter(b) ? a : b);
+            perVersionLast.merge(versionId, lastAt, (a, b) -> a.isAfter(b) ? a : b);
         }
+
+        long totalDenied = DocumentAccessLog.count(
+                "documentId = ?1 and deniedReason is not null", documentId);
 
         Map<UUID, Integer> versionNumbers = new HashMap<>();
         List<DocumentVersion> versions = DocumentVersion
@@ -184,7 +210,6 @@ public class AuditService {
                     actionCount(actions, AccessAction.DOWNLOAD),
                     perVersionLast.get(vid)));
         }
-        // Записи без версии — наверх, потом по убыванию номера версии.
         perVersion.sort((a, b) -> {
             if (a.versionNumber() == null && b.versionNumber() != null) return -1;
             if (a.versionNumber() != null && b.versionNumber() == null) return 1;
@@ -199,6 +224,8 @@ public class AuditService {
                         "select l.accountId, l.action, count(l), max(l.occurredAt) " +
                                 "from DocumentAccessLog l " +
                                 "where l.documentId = :docId " +
+                                "  and l.deniedReason is null " +
+                                "  and l.accountId is not null " +
                                 "group by l.accountId, l.action",
                         Object[].class)
                 .setParameter("docId", documentId)
@@ -250,6 +277,7 @@ public class AuditService {
                 totalViews,
                 totalPreviews,
                 totalDownloads,
+                totalDenied,
                 uniqueViewers,
                 perVersion,
                 perUser);
@@ -267,6 +295,7 @@ public class AuditService {
                 l.action.name(),
                 l.versionId,
                 l.version == null ? null : l.version.versionNumber,
+                l.attemptedVersionNumber,
                 l.accountId,
                 l.account == null ? null : l.account.displayName,
                 l.account == null ? null : l.account.email,
@@ -274,6 +303,7 @@ public class AuditService {
                 l.deviceType,
                 l.osName,
                 l.browserName,
-                l.userAgent);
+                l.userAgent,
+                l.deniedReason);
     }
 }

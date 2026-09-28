@@ -19,13 +19,10 @@ import org.acme.security.CurrentAccount;
 import org.acme.service.AccessService;
 import org.acme.service.AuditService;
 
-import java.time.Instant;
 import java.util.UUID;
 
 /**
  * Аудит доступа к документу.
- *
- * <p>Доступ к самому журналу — только у OWNER проекта или ADMIN.</p>
  */
 @Path("/api/documents/{documentId}/audit")
 @Produces(MediaType.APPLICATION_JSON)
@@ -36,15 +33,16 @@ public class DocumentAuditResource {
     @Inject CurrentAccount current;
 
     /**
-     * Постраничный список записей аудита.
+     * Страница журнала аудита.
      *
      * @param documentId     документ
      * @param action         фильтр по действию
      * @param accountId      фильтр по аккаунту
-     * @param versionId      фильтр по конкретной версии
-     * @param withoutVersion если {@code true} — только записи без версии (VIEW)
-     * @param before         ISO-8601 курсор
-     * @param limit          размер страницы
+     * @param versionId      фильтр по версии
+     * @param withoutVersion только записи без версии
+     * @param deniedOnly     только отказанные попытки
+     * @param page           номер страницы (0-based)
+     * @param size           размер страницы (1..200)
      * @return страница записей
      */
     @GET
@@ -55,25 +53,18 @@ public class DocumentAuditResource {
                                                @QueryParam("versionId") UUID versionId,
                                                @QueryParam("withoutVersion")
                                                @DefaultValue("false") boolean withoutVersion,
-                                               @QueryParam("before") String before,
-                                               @QueryParam("limit") @DefaultValue("50") int limit) {
+                                               @QueryParam("deniedOnly")
+                                               @DefaultValue("false") boolean deniedOnly,
+                                               @QueryParam("page")
+                                               @DefaultValue("0") int page,
+                                               @QueryParam("size")
+                                               @DefaultValue("50") int size) {
         requireOwnerOrAdmin(documentId);
-
         AccessAction act = parseAction(action);
-        Instant beforeInstant = (before == null || before.isBlank())
-                ? null
-                : Instant.parse(before);
-
         return audit.list(documentId, act, accountId, versionId, withoutVersion,
-                beforeInstant, limit);
+                deniedOnly, page, size);
     }
 
-    /**
-     * Агрегированная статистика.
-     *
-     * @param documentId документ
-     * @return статистика
-     */
     @GET
     @Path("/stats")
     @Transactional
