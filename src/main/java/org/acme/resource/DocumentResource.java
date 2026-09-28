@@ -25,10 +25,12 @@ import org.acme.dto.VersionMetaDto;
 import org.acme.entity.Account;
 import org.acme.entity.Document;
 import org.acme.entity.DocumentVersion;
+import org.acme.enums.AccessAction;
 import org.acme.enums.ProjectRole;
 import org.acme.mapper.DtoMapper;
 import org.acme.security.CurrentAccount;
 import org.acme.service.AccessService;
+import org.acme.service.AuditService;
 import org.acme.service.DocumentService;
 import org.acme.service.MimeDetector;
 import org.acme.service.TimelineService;
@@ -48,9 +50,6 @@ import java.util.UUID;
 
 /**
  * REST-ресурс документа: метаданные, версии, хронология.
- *
- * <p>Актор берётся из {@link CurrentAccount}, который заполняется
- * фильтром {@code SessionAuthFilter} по сессионному токену.</p>
  */
 @Path("/api/documents")
 @Produces(MediaType.APPLICATION_JSON)
@@ -62,10 +61,9 @@ public class DocumentResource {
     @Inject MimeDetector mimeDetector;
     @Inject AccessService access;
     @Inject CurrentAccount current;
+    @Inject AuditService audit;
 
     /**
-     * Тело запроса на обновление метаданных.
-     *
      * @param title   новый заголовок или {@code null}
      * @param docKind новый тип или {@code null}
      */
@@ -87,6 +85,7 @@ public class DocumentResource {
     @Transactional
     public DocumentDto get(@PathParam("id") UUID id) {
         Document document = requireVisible(id, ProjectRole.VIEWER);
+        audit.record(document.id, null, current.get(), AccessAction.VIEW);
         return DtoMapper.toDto(document);
     }
 
@@ -163,25 +162,37 @@ public class DocumentResource {
     }
 
     /**
-     * Отдаёт контент версии как поток байтов.
+     * Отдаёт контент версии как поток байтов. Пишет в аудит PREVIEW
+     * или DOWNLOAD в зависимости от {@code mode}.
      *
-     * @param id идентификатор документа
-     * @param n  номер версии
+     * @param id   идентификатор документа
+     * @param n    номер версии
+     * @param mode preview или download (по умолчанию download)
      * @return бинарный ответ
      */
     @GET
     @Path("/{id}/versions/{n}/content")
     @Produces(MediaType.APPLICATION_OCTET_STREAM)
     @Transactional
-    public Response download(@PathParam("id") UUID id, @PathParam("n") int n) {
-        requireVisible(id, ProjectRole.VIEWER);
+    public Response download(@PathParam("id") UUID id,
+                             @PathParam("n") int n,
+                             @QueryParam("mode") @DefaultValue("download") String mode) {
+        Document document = requireVisible(id, ProjectRole.VIEWER);
         DocumentVersion version = findVersion(id, n);
+
+        AccessAction action = "preview".equalsIgnoreCase(mode)
+                ? AccessAction.PREVIEW
+                : AccessAction.DOWNLOAD;
+        audit.record(document.id, version.id, current.get(), action);
+
         byte[] content = version.content;
 
         String encodedName = URLEncoder.encode(version.originalName, StandardCharsets.UTF_8)
                 .replace("+", "%20");
 
-        String disposition = "attachment; filename=\"" + version.originalName + "\"; " +
+        // Для preview — inline, чтобы браузер мог отобразить без скачивания
+        String dispositionType = action == AccessAction.PREVIEW ? "inline" : "attachment";
+        String disposition = dispositionType + "; filename=\"" + version.originalName + "\"; " +
                 "filename*=UTF-8''" + encodedName;
 
         return Response.ok(new ByteArrayInputStream(content))
@@ -262,13 +273,6 @@ public class DocumentResource {
      *  helper
      * ===================================================== */
 
-    /**
-     * Проверяет, что текущий актор имеет доступ к документу.
-     *
-     * @param documentId документ
-     * @param required   требуемая роль
-     * @return найденный документ
-     */
     private Document requireVisible(UUID documentId, ProjectRole required) {
         Document document = Document.findById(documentId);
         if (document == null || document.deletedAt != null) {
@@ -278,14 +282,6 @@ public class DocumentResource {
         return document;
     }
 
-    /**
-     * Ищет версию по документу и номеру.
-     *
-     * @param documentId документ
-     * @param number     номер версии
-     * @return найденная версия
-     * @throws NotFoundException если версия не найдена
-     */
     private DocumentVersion findVersion(UUID documentId, int number) {
         DocumentVersion version = DocumentVersion
                 .find("document.id = ?1 and versionNumber = ?2", documentId, number)

@@ -196,7 +196,43 @@ CREATE INDEX idx_events_actor         ON docs.document_events (actor_id);
 CREATE INDEX idx_events_type          ON docs.document_events (event_type, occurred_at DESC);
 
 -- =========================================================
+-- Document access log (аудит чтения/скачивания)
+-- =========================================================
+CREATE TABLE docs.document_access_log (
+                                          id           BIGSERIAL   PRIMARY KEY,
+                                          document_id  UUID        NOT NULL,
+                                          version_id   UUID,
+                                          account_id   UUID        NOT NULL,
+                                          action       VARCHAR(16) NOT NULL,
+                                          occurred_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                                          ip_address   VARCHAR(45),
+                                          user_agent   TEXT,
+                                          device_type  VARCHAR(16),
+                                          os_name      VARCHAR(64),
+                                          browser_name VARCHAR(64),
+                                          CONSTRAINT fk_log_document
+                                              FOREIGN KEY (document_id) REFERENCES docs.documents (id) ON DELETE CASCADE,
+                                          CONSTRAINT fk_log_version
+                                              FOREIGN KEY (version_id) REFERENCES docs.document_versions (id) ON DELETE SET NULL,
+                                          CONSTRAINT fk_log_account
+                                              FOREIGN KEY (account_id) REFERENCES docs.accounts (id) ON DELETE CASCADE,
+                                          CONSTRAINT ck_log_action CHECK (action IN ('VIEW', 'PREVIEW', 'DOWNLOAD')),
+    CONSTRAINT ck_log_device_type
+        CHECK (device_type IS NULL OR device_type IN ('desktop', 'mobile', 'tablet', 'bot', 'unknown'))
+);
+CREATE INDEX idx_log_document_time
+    ON docs.document_access_log (document_id, occurred_at DESC, id DESC);
+CREATE INDEX idx_log_version_time
+    ON docs.document_access_log (version_id, occurred_at DESC)
+    WHERE version_id IS NOT NULL;
+CREATE INDEX idx_log_account
+    ON docs.document_access_log (account_id, occurred_at DESC);
+CREATE INDEX idx_log_action
+    ON docs.document_access_log (document_id, action, occurred_at DESC);
+
+-- =========================================================
 -- Бэкфилл: создатели существующих проектов становятся OWNER
+-- (на пустой БД — no-op, безопасно оставить всегда)
 -- =========================================================
 INSERT INTO docs.project_access (id, project_id, account_id, role, granted_at, granted_by)
 SELECT gen_random_uuid(), p.id, p.created_by, 'OWNER', p.created_at, p.created_by
